@@ -33,6 +33,15 @@ except:
 from utils.graphics_utils import BasicPointCloud
 import concurrent.futures
 
+def get_num_workers():
+    value = os.getenv("HGS_NUM_WORKERS")
+    if value is None:
+        return None
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return None
+
 class CameraInfo(NamedTuple):
     uid: int
     R: np.array
@@ -224,7 +233,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
     ct = 0
     progress_bar = tqdm(cam_extrinsics, desc="Loading dataset")
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=get_num_workers()) as executor:
         futures = [executor.submit(process_frame, idx, key) for idx, key in enumerate(cam_extrinsics)]
 
         for future in concurrent.futures.as_completed(futures):
@@ -308,7 +317,7 @@ def readUCGSCameras(cam_extrinsics, cam_intrinsics, images_folder, add_aerial, a
     ct = 0
     progress_bar = tqdm(cam_extrinsics, desc="Loading dataset")
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=get_num_workers()) as executor:
         futures = [executor.submit(process_frame, idx, key) for idx, key in enumerate(cam_extrinsics)]
 
         for future in concurrent.futures.as_completed(futures):
@@ -441,7 +450,7 @@ def readCamerasFromTransforms(path, transformsfile, add_mask, add_depth, add_aer
         ct = 0
         progress_bar = tqdm(frames, desc="Loading dataset")
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=get_num_workers()) as executor:
             futures = [executor.submit(process_frame, idx, frame) for idx, frame in enumerate(frames)]
 
             for future in concurrent.futures.as_completed(futures):

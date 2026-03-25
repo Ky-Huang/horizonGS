@@ -14,11 +14,11 @@ import shutil
 import numpy as np
 
 import subprocess
-cmd = 'nvidia-smi -q -d Memory |grep -A4 GPU|grep Used'
-result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE).stdout.decode().split('\n')
-os.environ['CUDA_VISIBLE_DEVICES']=str(np.argmin([int(x.split()[2]) for x in result[:-1]]))
 
-os.system('echo $CUDA_VISIBLE_DEVICES')
+def _auto_select_gpu():
+    cmd = 'nvidia-smi -q -d Memory |grep -A4 GPU|grep Used'
+    result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE).stdout.decode().split('\n')
+    return str(np.argmin([int(x.split()[2]) for x in result[:-1]]))
 
 import torch
 import torchvision
@@ -47,7 +47,7 @@ import torch.nn.functional as F
 import warnings
 warnings.filterwarnings('ignore')
 
-lpips_fn = lpips.LPIPS(net='vgg').to('cuda')
+lpips_fn = None
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -728,8 +728,16 @@ if __name__ == "__main__":
 
     if args.gpu != '-1':
         os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
-        os.system("echo $CUDA_VISIBLE_DEVICES")
-        logger.info(f'using GPU {args.gpu}')
+        logger.info(f'using GPU {args.gpu} from --gpu')
+    elif os.getenv('CUDA_VISIBLE_DEVICES'):
+        logger.info(f"using GPU {os.getenv('CUDA_VISIBLE_DEVICES')} from CUDA_VISIBLE_DEVICES")
+    else:
+        auto_gpu = _auto_select_gpu()
+        os.environ['CUDA_VISIBLE_DEVICES'] = auto_gpu
+        logger.info(f'using GPU {auto_gpu} from auto selection')
+    os.system("echo $CUDA_VISIBLE_DEVICES")
+
+    lpips_fn = lpips.LPIPS(net='vgg').to('cuda')
     
     try:
         saveRuntimeCode(os.path.join(lp.model_path, 'backup'))
@@ -758,8 +766,11 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    
+
+    train_start_time = datetime.now()
     training(lp, op, pp, exp_name, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, wandb, logger)
+    train_end_time = datetime.now()
+    logger.info(f"Training start time: {train_start_time.strftime('%Y-%m-%d %H:%M:%S')}, end time: {train_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     # All done
     logger.info("\nTraining complete.")

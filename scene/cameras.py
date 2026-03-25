@@ -15,13 +15,14 @@ from torch import nn
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import getProjectionMatrix, getWorld2View2
 import cv2
-import kornia
+# import kornia
 
 class Camera(nn.Module):
     def __init__(self, resolution, colmap_id, R, T, Cx, Cy, FoVx, FoVy, image, alpha_mask, 
                  image_type, image_name, image_path, resolution_scale, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
-                 data_format='matrixcity',gt_depth=None, depth_params=None
+                 data_format='matrixcity', gt_depth=None, depth_params=None,
+                 orig_w=None, orig_h=None, lazy_load=False, render_only=False
                  ):
         super(Camera, self).__init__()
 
@@ -43,22 +44,23 @@ class Camera(nn.Module):
             print(f"[Warning] Custom device {data_device} failed, fallback to default cuda device" )
             self.data_device = torch.device("cuda")
 
-        resized_image_rgb = PILtoTorch(image, resolution).to(self.data_device)
-        gt_image = resized_image_rgb[:3, ...]
+        self.lazy_load = lazy_load
+        self.render_only = render_only
+        self._image_src = image
+        self._alpha_src = alpha_mask
+        self._resolution = resolution
 
-        if alpha_mask is not None:
-            self.alpha_mask = PILtoTorch(alpha_mask, resolution).to(self.data_device)
-        elif resized_image_rgb.shape[0] == 4:
-            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)
-        else: 
-            self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device))
-    
-        self.invdepthmap = None # use invdepth to avoid the floater in near places
-        self.original_image = gt_image.clamp(0.0, 1.0).to(self.data_device)
-        self.image_width = self.original_image.shape[2]
-        self.image_height = self.original_image.shape[1]
+        self.invdepthmap = None
+        self.original_image = None
+        self.alpha_mask = None
+
+        self.image_width = int(resolution[0])
+        self.image_height = int(resolution[1])
+
+        if not self.lazy_load and not self.render_only:
+            self.ensure_image_tensors()
         
-        if gt_depth is not None:
+        if gt_depth is not None and not self.render_only:
             if data_format == 'colmap':
                 invdepthmapScaled = gt_depth * depth_params["scale"] + depth_params["offset"]
                 invdepthmapScaled = cv2.resize(invdepthmapScaled, resolution)
@@ -66,21 +68,17 @@ class Camera(nn.Module):
                 if invdepthmapScaled.ndim != 2:
                     invdepthmapScaled = invdepthmapScaled[..., 0]
                 self.invdepthmap = torch.from_numpy(invdepthmapScaled[None]).to(self.data_device)
-                
             elif data_format == 'blender' or data_format == 'city':
                 gt_depth = torch.from_numpy(cv2.resize(gt_depth, resolution)[None])
-                if alpha_mask is not None and gt_depth.max()/gt_depth.min() > 100:
-                    # assert False, "blender data format does not support alpha mask"
-                    self.alpha_mask = self.alpha_mask * (gt_depth < 0.5*(gt_depth.max()+gt_depth.min())).to(self.data_device)
                 invdepthmap = 1. / gt_depth
                 self.invdepthmap = invdepthmap.to(self.data_device)
-        else:
-            self.invdepthmap = None
 
         if self.alpha_mask is not None:
             self.depth_mask = self.alpha_mask.clone()
-        else:
+        elif self.invdepthmap is not None:
             self.depth_mask = torch.ones_like(self.invdepthmap > 0)
+        else:
+            self.depth_mask = None
 
         self.zfar = 100.0
         self.znear = 0.01
@@ -93,11 +91,33 @@ class Camera(nn.Module):
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
         
-        self.cx = Cx * resolution[0] / image.size[0]
-        self.cy = Cy * resolution[1] / image.size[1]
+        base_w = orig_w if orig_w is not None else image.size[0]
+        base_h = orig_h if orig_h is not None else image.size[1]
+        self.cx = Cx * resolution[0] / base_w
+        self.cy = Cy * resolution[1] / base_h
         self.fx = self.image_width / (2 * np.tan(self.FoVx * 0.5))
         self.fy = self.image_height / (2 * np.tan(self.FoVy * 0.5))
         self.c2w = self.world_view_transform.transpose(0, 1).inverse()
+
+    def ensure_image_tensors(self):
+        if self.render_only:
+            return
+        if self.original_image is not None and self.alpha_mask is not None:
+            return
+        resized_image_rgb = PILtoTorch(self._image_src, self._resolution).to(self.data_device)
+        gt_image = resized_image_rgb[:3, ...]
+        if self._alpha_src is not None:
+            self.alpha_mask = PILtoTorch(self._alpha_src, self._resolution).to(self.data_device)
+        elif resized_image_rgb.shape[0] == 4:
+            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)
+        else:
+            self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...]).to(self.data_device)
+        self.original_image = gt_image.clamp(0.0, 1.0).to(self.data_device)
+
+    def release_image_tensors(self):
+        if self.lazy_load:
+            self.original_image = None
+            self.alpha_mask = None
 
 class MiniCam:
     def __init__(

@@ -25,7 +25,7 @@ import numpy as np
 class Scene:
 
     def __init__(self, args, gaussians, load_iteration=None, shuffle=True, logger=None, 
-                 opti_test_oppe = False, explicit = False, weed_ratio=0.):
+                 opti_test_oppe = False, explicit = False, weed_ratio=0., skip_train=False, skip_test=False):
         """
         :param path: Path to colmap scene main folder.
         """
@@ -106,10 +106,16 @@ class Scene:
         self.gaussians.set_appearance(len(scene_info.train_cameras))
         
         for resolution_scale in self.resolution_scales:
-            print("Loading Training Cameras")
-            self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, self.background)
-            print("Loading Test Cameras")
-            self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, self.background)
+            if not skip_train:
+                print("Loading Training Cameras")
+                self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, self.background)
+            else:
+                self.train_cameras[resolution_scale] = []
+            if not skip_test:
+                print("Loading Test Cameras")
+                self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, self.background)
+            else:
+                self.test_cameras[resolution_scale] = []
         
         if weed_ratio > 0.:
             self.gaussians.cam_infos = torch.empty(0, 4).float().cuda()

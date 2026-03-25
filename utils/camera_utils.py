@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import os
 import cv2
 import torch
 from scene.cameras import Camera
@@ -23,8 +24,17 @@ import re
 
 WARNED = False
 
+def get_num_workers():
+    value = os.getenv("HGS_NUM_WORKERS")
+    if value is None:
+        return None
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return None
+
 def loadCam(args, id, cam_info, resolution_scale, background):
-    orig_w, orig_h = cam_info.image.size
+    orig_w, orig_h = cam_info.width, cam_info.height
     
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -64,7 +74,9 @@ def loadCam(args, id, cam_info, resolution_scale, background):
     return Camera(resolution, colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, Cx=cam_info.CX, Cy=cam_info.CY, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, resolution_scale=resolution_scale, image=cam_info.image, 
                   alpha_mask=cam_info.mask, image_type=image_type, image_name=cam_info.image_name, image_path=cam_info.image_path, 
-                  uid=id, data_device=args.data_device,data_format=args.data_format, gt_depth=cam_info.depth, depth_params=cam_info.depth_params)
+                  uid=id, data_device=args.data_device, data_format=args.data_format, gt_depth=cam_info.depth, depth_params=cam_info.depth_params,
+                  orig_w=cam_info.width, orig_h=cam_info.height,
+                  lazy_load=getattr(args, "lazy_load_images", False), render_only=getattr(args, "render_only", False))
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args, background):
     camera_list = []
@@ -72,7 +84,7 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args, background):
     init = torch.inverse(torch.ones((1, 1), device="cuda"))
     ct = 0 
     progress_bar = tqdm(cam_infos, desc="Processing image")
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=get_num_workers()) as executor:
         futures = [executor.submit(loadCam, args, cam_id, c, resolution_scale, background) for cam_id, c in enumerate(cam_infos)]
 
         for future in concurrent.futures.as_completed(futures):

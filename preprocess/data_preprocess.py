@@ -306,9 +306,14 @@ def visibility_based_camera_and_coverage_based_point_selection(partitions, visib
         new_points.append(point_cloud.points)
         new_colors.append(point_cloud.colors)
         new_normals.append(point_cloud.normals)
-        new_points = np.concatenate(new_points, axis=0)
-        new_colors = np.concatenate(new_colors, axis=0)
-        new_normals = np.concatenate(new_normals, axis=0)
+        if len(new_points) == 1:
+            new_points = new_points[0]
+            new_colors = new_colors[0]
+            new_normals = new_normals[0]
+        else:
+            new_points = np.concatenate(new_points, axis=0)
+            new_colors = np.concatenate(new_colors, axis=0)
+            new_normals = np.concatenate(new_normals, axis=0)
 
         new_points, mask = np.unique(new_points, return_index=True, axis=0)
         new_colors = new_colors[mask]
@@ -403,9 +408,14 @@ def visibility_based_camera_and_coverage_based_point_selection_aerial_street(par
         new_points.append(point_cloud.points)
         new_colors.append(point_cloud.colors)
         new_normals.append(point_cloud.normals)
-        new_points = np.concatenate(new_points, axis=0)
-        new_colors = np.concatenate(new_colors, axis=0)
-        new_normals = np.concatenate(new_normals, axis=0)
+        if len(new_points) == 1:
+            new_points = new_points[0]
+            new_colors = new_colors[0]
+            new_normals = new_normals[0]
+        else:
+            new_points = np.concatenate(new_points, axis=0)
+            new_colors = np.concatenate(new_colors, axis=0)
+            new_normals = np.concatenate(new_normals, axis=0)
 
         new_points, mask = np.unique(new_points, return_index=True, axis=0)
         new_colors = new_colors[mask]
@@ -576,23 +586,24 @@ if __name__ == "__main__":
             scale = 1.0
         points = (points-center)/scale
 
-        aerial_dist = torch.tensor([]).cuda()
-        street_dist = torch.tensor([]).cuda()
+        aerial_dist = []
+        street_dist = []
         dist_ratio = dp.dist_ratio
         dist_ratio = 0.9
         fork = lp.model_config["kwargs"]["fork"]
         for cam in training_cams:
             cam_center = (cam.camera_center-center)/scale
-            
+
             dist = torch.sqrt(torch.sum((points - cam_center)**2, dim=1))
-            # breakpoint()
             dist_max = torch.quantile(dist, dist_ratio)
             dist_min = torch.quantile(dist, 1 - dist_ratio)
-            new_dist = torch.tensor([dist_min, dist_max]).float().cuda()
+            new_dist = torch.stack((dist_min, dist_max)).float()
             if cam.image_type == "aerial":
-                aerial_dist = torch.cat((aerial_dist, new_dist), dim=0)
+                aerial_dist.append(new_dist)
             elif cam.image_type == "street":
-                street_dist = torch.cat((street_dist, new_dist), dim=0)
+                street_dist.append(new_dist)
+        aerial_dist = torch.cat(aerial_dist, dim=0)
+        street_dist = torch.cat(street_dist, dim=0)
         aerial_dist_max = torch.quantile(aerial_dist, dist_ratio)
         aerial_dist_min = torch.quantile(aerial_dist, 1 - dist_ratio)
         street_dist_max = torch.quantile(street_dist, dist_ratio)

@@ -287,12 +287,16 @@ class GaussianLoDModel(BasicModel):
         dist = torch.sqrt(torch.sum((self.get_anchor - cam_center)**2, dim=1)) * resolution_scale
         pred_level = torch.log2(self.standard_dist/dist)/math.log2(self.fork) + self._extra_level
         int_level = self.map_to_int_level(pred_level, self.street_levels - 1)
+        # print(f"[LoD] int_level max: {int_level.max().item()}")
+        # int_level = torch.full((pred_level.shape[0],), 3, dtype=torch.int, device=pred_level.device)
         self._anchor_mask = (self._level.squeeze(dim=1) <= int_level)
     
     def set_gs_mask(self, cam_center, resolution_scale):
         dist = torch.sqrt(torch.sum((self._xyz - cam_center)**2, dim=1)) * resolution_scale
         pred_level = torch.log2(self.standard_dist/dist)/math.log2(self.fork) + self._extra_level
         int_level = self.map_to_int_level(pred_level, self.street_levels - 1)
+        # print(f"[LoD] int_level max: {int_level.max().item()}")
+        # int_level = torch.full((pred_level.shape[0],), 3, dtype=torch.int, device=pred_level.device)
         self._gs_mask = (self._level.squeeze(dim=1) <= int_level)
 
     def training_setup(self, training_args):
