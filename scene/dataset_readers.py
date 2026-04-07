@@ -162,8 +162,20 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, masks_folder, depths_folder, add_aerial, add_street):
+def _normalize_target_name(name):
+    return os.path.splitext(os.path.basename(str(name)))[0].lower()
+
+
+def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, masks_folder, depths_folder, add_aerial, add_street, target_views=None):
     cam_infos = []
+    target_set = {_normalize_target_name(t) for t in target_views} if target_views else None
+
+    selected_keys = list(cam_extrinsics.keys())
+    if target_set is not None:
+        selected_keys = [
+            key for key in selected_keys
+            if _normalize_target_name(cam_extrinsics[key].name) in target_set
+        ]
     
     def process_frame(idx, key):
         extr = cam_extrinsics[key]
@@ -231,10 +243,10 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         )
 
     ct = 0
-    progress_bar = tqdm(cam_extrinsics, desc="Loading dataset")
+    progress_bar = tqdm(selected_keys, desc="Loading dataset")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=get_num_workers()) as executor:
-        futures = [executor.submit(process_frame, idx, key) for idx, key in enumerate(cam_extrinsics)]
+        futures = [executor.submit(process_frame, idx, key) for idx, key in enumerate(selected_keys)]
 
         for future in concurrent.futures.as_completed(futures):
             cam_info = future.result()
@@ -251,7 +263,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
             
             ct+=1
             if ct % 10 == 0:
-                progress_bar.set_postfix({"num": Fore.YELLOW+f"{ct}/{len(cam_extrinsics)}"+Style.RESET_ALL})
+                progress_bar.set_postfix({"num": Fore.YELLOW+f"{ct}/{len(selected_keys)}"+Style.RESET_ALL})
                 progress_bar.update(10)
 
         progress_bar.close()
@@ -474,7 +486,7 @@ def readCamerasFromTransforms(path, transformsfile, add_mask, add_depth, add_aer
     cam_infos = sorted(cam_infos, key = lambda x : x.image_path)
     return cam_infos
 
-def readColmapSceneInfo(path, eval, images, add_mask, add_depth, add_aerial, add_street, llffhold=32):
+def readColmapSceneInfo(path, eval, images, add_mask, add_depth, add_aerial, add_street, llffhold=32, target_views=None):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -510,9 +522,22 @@ def readColmapSceneInfo(path, eval, images, add_mask, add_depth, add_aerial, add
     reading_dir = os.path.join(path, images)
     mask_dir = os.path.join(path, "masks") if add_mask else None
     depth_dir = os.path.join(path, "depths") if add_depth else None
-    cam_infos = readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, reading_dir, mask_dir, depth_dir, add_aerial, add_street)
+    cam_infos = readColmapCameras(
+        cam_extrinsics,
+        cam_intrinsics,
+        depths_params,
+        reading_dir,
+        mask_dir,
+        depth_dir,
+        add_aerial,
+        add_street,
+        target_views=target_views,
+    )
     
-    if eval:
+    if target_views:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+    elif eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
         test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
     else:

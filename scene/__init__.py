@@ -22,6 +22,17 @@ from utils.graphics_utils import BasicPointCloud
 import numpy as np
 
 
+def _normalize_target_name(name):
+    return os.path.splitext(os.path.basename(str(name)))[0].lower()
+
+
+def _filter_camera_infos(cam_infos, targets):
+    if not targets:
+        return cam_infos
+    target_set = {_normalize_target_name(t) for t in targets}
+    return [cam for cam in cam_infos if _normalize_target_name(cam.image_name) in target_set]
+
+
 class Scene:
 
     def __init__(self, args, gaussians, load_iteration=None, shuffle=True, logger=None, 
@@ -67,7 +78,8 @@ class Scene:
             print("Use Colmap data set!")
             scene_info = sceneLoadTypeCallbacks["Colmap"](
                 args.source_path, args.eval, args.images, args.add_mask, args.add_depth, \
-                args.add_aerial, args.add_street, args.llffhold
+                args.add_aerial, args.add_street, args.llffhold,
+                target_views=getattr(args, "target_views", None),
             )
         elif args.data_format == 'city':
             print("Use City data set!")
@@ -101,6 +113,18 @@ class Scene:
         if shuffle:
             random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
             random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
+
+        target_views = getattr(args, "target_views", None)
+        if target_views:
+            scene_info = scene_info._replace(
+                train_cameras=_filter_camera_infos(scene_info.train_cameras, target_views),
+                test_cameras=_filter_camera_infos(scene_info.test_cameras, target_views),
+            )
+            print(
+                "Filtered cameras by target views: train={}, test={}".format(
+                    len(scene_info.train_cameras), len(scene_info.test_cameras)
+                )
+            )
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
         self.gaussians.set_appearance(len(scene_info.train_cameras))

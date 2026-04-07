@@ -99,6 +99,34 @@ class Camera(nn.Module):
         self.fy = self.image_height / (2 * np.tan(self.FoVy * 0.5))
         self.c2w = self.world_view_transform.transpose(0, 1).inverse()
 
+    def get_intrinsics(self, device=None, dtype=torch.float32):
+        device = device or self.world_view_transform.device
+        return torch.tensor(
+            [[self.fx, 0.0, self.cx], [0.0, self.fy, self.cy], [0.0, 0.0, 1.0]],
+            dtype=dtype,
+            device=device,
+        )
+
+    def get_world_to_camera(self):
+        return self.world_view_transform.transpose(0, 1)
+
+    def get_camera_to_world(self):
+        return self.c2w
+
+    def generate_camera_rays(self, device=None, dtype=torch.float32):
+        device = device or self.world_view_transform.device
+        ys, xs = torch.meshgrid(
+            torch.arange(self.image_height, device=device, dtype=dtype),
+            torch.arange(self.image_width, device=device, dtype=dtype),
+            indexing="ij",
+        )
+        x = (xs + 0.5 - self.cx) / self.fx
+        y = (ys + 0.5 - self.cy) / self.fy
+        dirs_cam = torch.stack((x, y, torch.ones_like(x)), dim=-1)
+        dirs_cam = torch.nn.functional.normalize(dirs_cam, dim=-1)
+        dirs_world = dirs_cam @ self.get_camera_to_world()[:3, :3].transpose(0, 1)
+        return torch.nn.functional.normalize(dirs_world, dim=-1)
+
     def ensure_image_tensors(self):
         if self.render_only:
             return
@@ -141,3 +169,36 @@ class MiniCam:
         self.full_proj_transform = full_proj_transform
         view_inv = torch.inverse(self.world_view_transform)
         self.camera_center = view_inv[3][:3]
+        self.cx = width * 0.5
+        self.cy = height * 0.5
+        self.fx = self.image_width / (2 * np.tan(self.FoVx * 0.5))
+        self.fy = self.image_height / (2 * np.tan(self.FoVy * 0.5))
+        self.c2w = self.world_view_transform.transpose(0, 1).inverse()
+
+    def get_intrinsics(self, device=None, dtype=torch.float32):
+        device = device or self.world_view_transform.device
+        return torch.tensor(
+            [[self.fx, 0.0, self.cx], [0.0, self.fy, self.cy], [0.0, 0.0, 1.0]],
+            dtype=dtype,
+            device=device,
+        )
+
+    def get_world_to_camera(self):
+        return self.world_view_transform.transpose(0, 1)
+
+    def get_camera_to_world(self):
+        return self.c2w
+
+    def generate_camera_rays(self, device=None, dtype=torch.float32):
+        device = device or self.world_view_transform.device
+        ys, xs = torch.meshgrid(
+            torch.arange(self.image_height, device=device, dtype=dtype),
+            torch.arange(self.image_width, device=device, dtype=dtype),
+            indexing="ij",
+        )
+        x = (xs + 0.5 - self.cx) / self.fx
+        y = (ys + 0.5 - self.cy) / self.fy
+        dirs_cam = torch.stack((x, y, torch.ones_like(x)), dim=-1)
+        dirs_cam = torch.nn.functional.normalize(dirs_cam, dim=-1)
+        dirs_world = dirs_cam @ self.get_camera_to_world()[:3, :3].transpose(0, 1)
+        return torch.nn.functional.normalize(dirs_world, dim=-1)

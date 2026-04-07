@@ -382,7 +382,7 @@ def training_report(tb_writer, dataset_name, iteration, Ll1, loss, l1_loss, elap
 
         scene.gaussians.train()
 
-def render_set(model_path, name, iteration, views, gaussians, pipe, background, add_aerial, add_street):
+def render_set(model_path, name, iteration, views, gaussians, pipe, background, add_aerial, add_street, write_per_view_count=False):
     if add_aerial:
         aerial_render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "renders")
         aerial_error_path = os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "errors")
@@ -433,9 +433,11 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
         street_visible_count_list.append(visible_count)
         street_per_view_dict['{0:05d}'.format(idx) + ".png"] = visible_count.item()
     
-    if len(street_views) > 0:
-        with open(os.path.join(model_path, name, "ours_{}".format(iteration), "street", "per_view_count.json"), 'w') as fp:
+    if write_per_view_count and len(street_views) > 0:
+        street_count_path = os.path.join(model_path, name, "ours_{}".format(iteration), "street", "per_view_count.json")
+        with open(street_count_path, 'w') as fp:
             json.dump(street_per_view_dict, fp, indent=True)
+        os.chmod(street_count_path, 0o666)
     
     aerial_t_list = []
     aerial_visible_count_list = []
@@ -470,13 +472,15 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
         aerial_visible_count_list.append(visible_count)
         aerial_per_view_dict['{0:05d}'.format(idx) + ".png"] = visible_count.item()
 
-    if len(aerial_views) > 0:
-        with open(os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "per_view_count.json"), 'w') as fp:
+    if write_per_view_count and len(aerial_views) > 0:
+        aerial_count_path = os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "per_view_count.json")
+        with open(aerial_count_path, 'w') as fp:
             json.dump(aerial_per_view_dict, fp, indent=True)
+        os.chmod(aerial_count_path, 0o666)
 
     return aerial_visible_count_list, street_visible_count_list
 
-def render_sets(dataset, opt, pipe, iteration, skip_train=False, skip_test=False, wandb=None, tb_writer=None, dataset_name=None, logger=None):
+def render_sets(dataset, opt, pipe, iteration, skip_train=False, skip_test=False, wandb=None, tb_writer=None, dataset_name=None, logger=None, write_per_view_count=False):
     with torch.no_grad():
         if pipe.no_prefilter_step > 0:
             pipe.add_prefilter = False
@@ -492,10 +496,10 @@ def render_sets(dataset, opt, pipe, iteration, skip_train=False, skip_test=False
             os.makedirs(dataset.model_path)
 
         if not skip_train:
-            aerial_visible_count, street_visible_count = render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipe, scene.background, scene.add_aerial, scene.add_street)
+            aerial_visible_count, street_visible_count = render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipe, scene.background, scene.add_aerial, scene.add_street, write_per_view_count=write_per_view_count)
 
         if not skip_test:
-            aerial_visible_count, street_visible_count = render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipe, scene.background, scene.add_aerial, scene.add_street)
+            aerial_visible_count, street_visible_count = render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipe, scene.background, scene.add_aerial, scene.add_street, write_per_view_count=write_per_view_count)
 
     return aerial_visible_count, street_visible_count
 
@@ -701,6 +705,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--gpu", type=str, default = '-1')
+    parser.add_argument("--write_per_view_count", action="store_true")
     args = parser.parse_args(sys.argv[1:])
     with open(args.config) as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
@@ -778,9 +783,9 @@ if __name__ == "__main__":
     # rendering
     logger.info(f'\nStarting Rendering~')
     if lp.eval:
-        aerial_visible_count, street_visible_count = render_sets(lp, op, pp, -1, skip_train=True, skip_test=False, wandb=wandb, logger=logger)
+        aerial_visible_count, street_visible_count = render_sets(lp, op, pp, -1, skip_train=True, skip_test=False, wandb=wandb, logger=logger, write_per_view_count=args.write_per_view_count)
     else:
-        aerial_visible_count, street_visible_count = render_sets(lp, op, pp, -1, skip_train=False, skip_test=True, wandb=wandb, logger=logger)
+        aerial_visible_count, street_visible_count = render_sets(lp, op, pp, -1, skip_train=False, skip_test=True, wandb=wandb, logger=logger, write_per_view_count=args.write_per_view_count)
     logger.info("\nRendering complete.")
 
     # calc metrics

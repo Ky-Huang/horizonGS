@@ -117,6 +117,94 @@ def render(viewpoint_camera, pc, pipe, bg_color):
 
     return return_dict
 
+def _project_gaussians_to_2d(means, quats, scales, viewpoint_camera, gs_attr):
+    Ks = torch.tensor([
+            [viewpoint_camera.fx, 0, viewpoint_camera.cx],
+            [0, viewpoint_camera.fy, viewpoint_camera.cy],
+            [0, 0, 1],
+        ],dtype=torch.float32, device="cuda")[None]
+    viewmats = viewpoint_camera.world_view_transform.transpose(0, 1)[None]
+
+    if gs_attr == "3D":
+        proj_results = fully_fused_projection(
+            means, None, quats, scales, viewmats, Ks,
+            int(viewpoint_camera.image_width), int(viewpoint_camera.image_height),
+            eps2d=0.3, packed=False, near_plane=0.01, far_plane=1e10,
+            radius_clip=0.0, sparse_grad=False, calc_compensations=False,
+        )
+    elif gs_attr == "2D":
+        C, N = viewmats.shape[0], means.shape[0]
+        densifications = torch.zeros((C, N, 2), dtype=means.dtype, device="cuda")
+        proj_results = fully_fused_projection_2dgs(
+            means, quats, scales, viewmats, densifications, Ks,
+            int(viewpoint_camera.image_width), int(viewpoint_camera.image_height),
+            eps2d=0.3, packed=False, near_plane=0.01, far_plane=1e10,
+            radius_clip=0.0, sparse_grad=False,
+        )
+    else:
+        raise ValueError(f"Unknown gs_attr: {gs_attr}")
+
+    radii, means2d, depths, conics, compensations = proj_results
+    return radii.squeeze(0), means2d.squeeze(0)
+
+def render_motion_vectors(viewpoint_camera_a, viewpoint_camera_b, pc, pipe, bg_color=None, normalize_by_alpha=True, eps=1e-6):
+    if pc.explicit_gs:
+        pc.set_gs_mask(viewpoint_camera_a.camera_center, viewpoint_camera_a.resolution_scale)
+        visible_mask = pc._gs_mask
+        xyz, color, opacity, scaling, rot, sh_degree, selection_mask = pc.generate_explicit_gaussians(visible_mask)
+    else:
+        pc.set_anchor_mask(viewpoint_camera_a.camera_center, viewpoint_camera_a.resolution_scale)
+        visible_mask = prefilter_voxel(viewpoint_camera_a, pc).squeeze() if pipe.add_prefilter else pc._anchor_mask
+        xyz, offset, color, opacity, scaling, rot, sh_degree, selection_mask = pc.generate_neural_gaussians(viewpoint_camera_a, visible_mask)
+
+    radii_a, means2d_a = _project_gaussians_to_2d(xyz, rot, scaling, viewpoint_camera_a, pc.gs_attr)
+    radii_b, means2d_b = _project_gaussians_to_2d(xyz, rot, scaling, viewpoint_camera_b, pc.gs_attr)
+    valid_pair = (radii_a > 0) & (radii_b > 0)
+
+    flow = (means2d_b - means2d_a) * valid_pair[:, None].to(means2d_a.dtype)
+    flow_payload = torch.cat([flow, valid_pair[:, None].to(flow.dtype)], dim=1)
+
+    K_a = torch.tensor([
+            [viewpoint_camera_a.fx, 0, viewpoint_camera_a.cx],
+            [0, viewpoint_camera_a.fy, viewpoint_camera_a.cy],
+            [0, 0, 1],
+        ],dtype=torch.float32, device="cuda")
+    viewmat_a = viewpoint_camera_a.world_view_transform.transpose(0, 1)
+
+    flow_render, flow_alpha, info = gsplat.rasterization(
+        means=xyz,
+        quats=rot,
+        scales=scaling,
+        opacities=opacity.squeeze(-1),
+        colors=flow_payload,
+        viewmats=viewmat_a[None],
+        Ks=K_a[None],
+        backgrounds=torch.zeros((1, 3), dtype=flow.dtype, device=flow.device),
+        width=int(viewpoint_camera_a.image_width),
+        height=int(viewpoint_camera_a.image_height),
+        packed=False,
+        sh_degree=None,
+        render_mode="RGB",
+    )
+
+    flow_rgb = flow_render[0].permute(2, 0, 1)
+    alpha = flow_alpha[0].permute(2, 0, 1)
+    motion_raw = flow_rgb[:2]
+    motion = motion_raw / alpha.clamp_min(eps) if normalize_by_alpha else motion_raw
+
+    return {
+        "motion": motion,
+        "motion_raw": motion_raw,
+        "motion_support": flow_rgb[2:3],
+        "render_alphas": alpha,
+        "gaussian_valid_pair": valid_pair,
+        "viewspace_points_a": means2d_a,
+        "viewspace_points_b": means2d_b,
+        "visibility_filter": info["radii"].squeeze(0) > 0,
+        "visible_mask": visible_mask,
+        "selection_mask": selection_mask,
+    }
+
 def prefilter_voxel(viewpoint_camera, pc):
     """
     Render the scene. 

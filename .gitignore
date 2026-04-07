@@ -14,3 +14,8 @@ screenshots
 *.so
 
 submodules/Depth-Anything-V2/*
+.codex
+Car.mtl
+sky0.hdr
+Car.obj
+res.txt
