@@ -39,6 +39,7 @@ from utils.hybrid_camera_paths import (
     resolve_orbit_axis,
     find_camera_by_name,
 )
+from xr import run_openxr_render_session
 from argparse import ArgumentParser
 
 def _flow_uv_to_color(flow_uv, support=None, clip_percentile=99.0):
@@ -540,8 +541,9 @@ def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, 
         else:
             pipe.add_prefilter = True
         camera_path_mode = getattr(dataset, "camera_path_mode", "")
-        scene_skip_train = skip_train if not camera_path_mode else False
-        scene_skip_test = skip_test if not camera_path_mode else False
+        xr_mode = getattr(dataset, "xr_mode", "")
+        scene_skip_train = skip_train if not (camera_path_mode or xr_mode) else False
+        scene_skip_test = skip_test if not (camera_path_mode or xr_mode) else False
         modules = __import__('scene')
         model_config = dataset.model_config
         model_config['kwargs']['ape_code'] = ape_code
@@ -551,6 +553,28 @@ def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, 
 
         if not os.path.exists(dataset.model_path):
             os.makedirs(dataset.model_path)
+
+        if xr_mode:
+            render_fn = _select_render_fn(__import__('gaussian_renderer'), pipe)
+            run_openxr_render_session(
+                model_path=dataset.model_path,
+                iteration=scene.loaded_iter,
+                gaussians=gaussians,
+                pipe=pipe,
+                background=scene.background,
+                render_fn=render_fn,
+                xr_mode=xr_mode,
+                xr_input=getattr(dataset, "xr_input", ""),
+                xr_config_path=getattr(dataset, "xr_config", ""),
+                xr_output_name=getattr(dataset, "xr_output_name", "openxr"),
+                xr_output_layout=getattr(dataset, "xr_output_layout", "both"),
+                xr_save_video=bool(getattr(dataset, "xr_save_video", False)),
+                xr_video_fps=int(getattr(dataset, "xr_video_fps", 30)),
+                xr_socket_host=getattr(dataset, "xr_socket_host", "127.0.0.1"),
+                xr_socket_port=int(getattr(dataset, "xr_socket_port", 6110)),
+                xr_max_frames=int(getattr(dataset, "xr_max_frames", -1)),
+            )
+            return
 
         if _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, write_per_view_count):
             return
@@ -620,6 +644,16 @@ if __name__ == "__main__":
     parser.add_argument("--orbit_polar_deg", type=float, default=60.0)
     parser.add_argument("--orbit_start_azimuth_deg", type=float, default=0.0)
     parser.add_argument("--orbit_sweep_deg", type=float, default=360.0)
+    parser.add_argument("--xr_mode", type=str, default="")
+    parser.add_argument("--xr_input", type=str, default="")
+    parser.add_argument("--xr_config", type=str, default="")
+    parser.add_argument("--xr_output_name", type=str, default="openxr")
+    parser.add_argument("--xr_output_layout", type=str, default="both")
+    parser.add_argument("--xr_save_video", action="store_true")
+    parser.add_argument("--xr_video_fps", type=int, default=30)
+    parser.add_argument("--xr_socket_host", type=str, default="127.0.0.1")
+    parser.add_argument("--xr_socket_port", type=int, default=6110)
+    parser.add_argument("--xr_max_frames", type=int, default=-1)
     args = parser.parse_args(sys.argv[1:])
 
     if args.num_workers > 0:
@@ -630,7 +664,7 @@ if __name__ == "__main__":
         lp, op, pp = parse_cfg(cfg)
         lp.model_path = args.model_path
         lp.lazy_load_images = args.lazy_load_images
-        lp.render_only = args.render_only or bool(args.camera_path_mode)
+        lp.render_only = args.render_only or bool(args.camera_path_mode) or bool(args.xr_mode)
         lp.target_views = args.target_view
         lp.camera_path_mode = args.camera_path_mode
         lp.camera_path_start_view = args.camera_path_start_view
@@ -648,6 +682,16 @@ if __name__ == "__main__":
         lp.orbit_polar_deg = args.orbit_polar_deg
         lp.orbit_start_azimuth_deg = args.orbit_start_azimuth_deg
         lp.orbit_sweep_deg = args.orbit_sweep_deg
+        lp.xr_mode = args.xr_mode.strip().lower()
+        lp.xr_input = args.xr_input
+        lp.xr_config = args.xr_config
+        lp.xr_output_name = args.xr_output_name
+        lp.xr_output_layout = args.xr_output_layout.strip().lower()
+        lp.xr_save_video = args.xr_save_video
+        lp.xr_video_fps = args.xr_video_fps
+        lp.xr_socket_host = args.xr_socket_host
+        lp.xr_socket_port = args.xr_socket_port
+        lp.xr_max_frames = args.xr_max_frames
     if args.enable_hybrid_render:
         pp.enable_hybrid_render = True
     if args.hybrid_scene_config:

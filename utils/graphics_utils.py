@@ -70,6 +70,27 @@ def getProjectionMatrix(znear, zfar, fovX, fovY):
     P[2, 3] = -(zfar * znear) / (zfar - znear)
     return P
 
+def getProjectionMatrixFromIntrinsics(width, height, fx, fy, cx, cy, znear, zfar):
+    # Keep the stored layout consistent with Camera.projection_matrix, which is
+    # the transpose-style matrix used throughout the project.
+    P = torch.zeros(4, 4, dtype=torch.float32)
+
+    width = float(width)
+    height = float(height)
+    fx = float(fx)
+    fy = float(fy)
+    cx = float(cx)
+    cy = float(cy)
+
+    P[0, 0] = 2.0 * fx / max(width, 1.0)
+    P[1, 1] = 2.0 * fy / max(height, 1.0)
+    P[2, 0] = (2.0 * cx - (width - 1.0)) / max(width, 1.0)
+    P[2, 1] = (2.0 * cy - (height - 1.0)) / max(height, 1.0)
+    P[2, 2] = zfar / (zfar - znear)
+    P[2, 3] = 1.0
+    P[3, 2] = -(zfar * znear) / (zfar - znear)
+    return P
+
 def fov2focal(fov, pixels):
     return pixels / (2 * math.tan(fov / 2))
 

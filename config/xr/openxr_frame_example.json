@@ -1,0 +1,42 @@
+{
+  "frames": [
+    {
+      "frame_id": 0,
+      "timestamp_ns": 0,
+      "views": {
+        "left": {
+          "pose": {
+            "position": [-0.032, 1.62, 0.0],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]
+          },
+          "fov": {
+            "angle_left": -0.83,
+            "angle_right": 0.74,
+            "angle_up": 0.80,
+            "angle_down": -0.80
+          },
+          "image_rect": {
+            "width": 1832,
+            "height": 1920
+          }
+        },
+        "right": {
+          "pose": {
+            "position": [0.032, 1.62, 0.0],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]
+          },
+          "fov": {
+            "angle_left": -0.74,
+            "angle_right": 0.83,
+            "angle_up": 0.80,
+            "angle_down": -0.80
+          },
+          "image_rect": {
+            "width": 1832,
+            "height": 1920
+          }
+        }
+      }
+    }
+  ]
+}

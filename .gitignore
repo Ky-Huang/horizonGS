@@ -1,5 +1,4 @@
 *.pyc
-.vscode
 temp*
 outputs*
 debug*

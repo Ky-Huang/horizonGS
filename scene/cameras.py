@@ -13,7 +13,11 @@ import numpy as np
 import torch
 from torch import nn
 from utils.general_utils import PILtoTorch
-from utils.graphics_utils import getProjectionMatrix, getWorld2View2
+from utils.graphics_utils import (
+    getProjectionMatrix,
+    getProjectionMatrixFromIntrinsics,
+    getWorld2View2,
+)
 import cv2
 # import kornia
 
@@ -157,7 +161,16 @@ class MiniCam:
         znear,
         zfar,
         world_view_transform,
-        full_proj_transform,
+        full_proj_transform=None,
+        fx=None,
+        fy=None,
+        cx=None,
+        cy=None,
+        projection_matrix=None,
+        resolution_scale=1.0,
+        image_name="",
+        image_path="",
+        image_type="street",
     ):
         self.image_width = width
         self.image_height = height
@@ -166,13 +179,51 @@ class MiniCam:
         self.znear = znear
         self.zfar = zfar
         self.world_view_transform = world_view_transform
-        self.full_proj_transform = full_proj_transform
+        self.resolution_scale = resolution_scale
+        self.image_name = image_name
+        self.image_path = image_path or image_name
+        self.image_type = image_type
+        self.render_only = True
+        self.original_image = None
+        self.alpha_mask = None
         view_inv = torch.inverse(self.world_view_transform)
         self.camera_center = view_inv[3][:3]
-        self.cx = width * 0.5
-        self.cy = height * 0.5
-        self.fx = self.image_width / (2 * np.tan(self.FoVx * 0.5))
-        self.fy = self.image_height / (2 * np.tan(self.FoVy * 0.5))
+
+        default_fx = self.image_width / (2 * np.tan(self.FoVx * 0.5))
+        default_fy = self.image_height / (2 * np.tan(self.FoVy * 0.5))
+        self.fx = float(default_fx if fx is None else fx)
+        self.fy = float(default_fy if fy is None else fy)
+        self.cx = float(self.image_width * 0.5 if cx is None else cx)
+        self.cy = float(self.image_height * 0.5 if cy is None else cy)
+
+        if projection_matrix is None:
+            if fx is None and fy is None and cx is None and cy is None:
+                projection_matrix = getProjectionMatrix(
+                    znear=self.znear,
+                    zfar=self.zfar,
+                    fovX=self.FoVx,
+                    fovY=self.FoVy,
+                ).transpose(0, 1)
+            else:
+                projection_matrix = getProjectionMatrixFromIntrinsics(
+                    width=self.image_width,
+                    height=self.image_height,
+                    fx=self.fx,
+                    fy=self.fy,
+                    cx=self.cx,
+                    cy=self.cy,
+                    znear=self.znear,
+                    zfar=self.zfar,
+                )
+        self.projection_matrix = projection_matrix.to(
+            device=self.world_view_transform.device,
+            dtype=self.world_view_transform.dtype,
+        )
+        if full_proj_transform is None:
+            full_proj_transform = (
+                self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))
+            ).squeeze(0)
+        self.full_proj_transform = full_proj_transform
         self.c2w = self.world_view_transform.transpose(0, 1).inverse()
 
     def get_intrinsics(self, device=None, dtype=torch.float32):
