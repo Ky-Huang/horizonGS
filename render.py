@@ -221,6 +221,15 @@ def _save_mesh_instances(render_pkg, output_dir):
         json.dump(mesh_instances, f, indent=2)
 
 
+def _resolve_render_output_root(model_path, fixed_lod=-1):
+    if fixed_lod is None:
+        return model_path
+    fixed_lod = int(fixed_lod)
+    if fixed_lod < 0:
+        return model_path
+    return os.path.join(model_path, f"fix-lod-{fixed_lod}")
+
+
 def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, write_per_view_count):
     mode = getattr(dataset, "camera_path_mode", "")
     if not mode:
@@ -291,7 +300,11 @@ def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, 
     )
 
     if bool(getattr(dataset, "camera_path_save_video", False)):
-        root = os.path.join(dataset.model_path, render_name, f"ours_{scene.loaded_iter}")
+        root = os.path.join(
+            _resolve_render_output_root(dataset.model_path, getattr(pipe, "fix_lod", -1)),
+            render_name,
+            f"ours_{scene.loaded_iter}",
+        )
         for branch in ["street", "aerial"]:
             render_dir = os.path.join(root, branch, "renders")
             if not os.path.isdir(render_dir):
@@ -301,7 +314,7 @@ def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, 
                 print(f"[camera-path] wrote video: {output_path}")
     return True
 
-def render_set(model_path, name, iteration, views, gaussians, pipe, background, add_aerial, add_street, render_only=False, render_motion_vectors=False, write_per_view_count=False):
+def render_set(model_path, name, iteration, views, gaussians, pipe, background, add_aerial, add_street, render_only=False, render_motion_vectors=False, write_per_view_count=False, show_fps=False):
     vis_normal = False
     vis_depth = False
     if gaussians.gs_attr == "2D" and not render_only:
@@ -309,6 +322,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
         vis_depth = True
     hybrid_enabled = _hybrid_enabled(pipe)
     save_hybrid_buffers = hybrid_enabled and bool(getattr(pipe, "hybrid_save_buffers", False))
+    output_root = _resolve_render_output_root(model_path, getattr(pipe, "fix_lod", -1))
 
     views = _filter_views_by_targets(views, TARGET_RENDER_IMAGE_PATHS)
     if TARGET_RENDER_MAX_VIEWS is not None:
@@ -316,62 +330,62 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
     print(f"[{name}] selected views: {len(views)}")
         
     if add_aerial:
-        aerial_render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "renders")
+        aerial_render_path = os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "renders")
         makedirs(aerial_render_path, exist_ok=True)
         if not render_only:
-            aerial_error_path = os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "errors")
-            aerial_gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "gt")
+            aerial_error_path = os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "errors")
+            aerial_gts_path = os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "gt")
             makedirs(aerial_error_path, exist_ok=True)
             makedirs(aerial_gts_path, exist_ok=True)
         
         if vis_normal:
-            aerial_normal_path = os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "normal")
+            aerial_normal_path = os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "normal")
             makedirs(aerial_normal_path, exist_ok=True)
         if vis_depth:
-            aerial_depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "depth")
+            aerial_depth_path = os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "depth")
             makedirs(aerial_depth_path, exist_ok=True)
         if save_hybrid_buffers:
             aerial_hybrid_buffer_path = {
-                "gs_depth": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_gs_depth"),
-                "mesh_depth": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_mesh_depth"),
-                "final_depth": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_final_depth"),
-                "gs_alpha": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_gs_alpha"),
-                "mesh_alpha": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_mesh_alpha"),
-                "mesh_rgb": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_mesh_rgb"),
-                "gs_rgb": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_gs_rgb"),
-                "sky_rgb": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_sky_rgb"),
-                "front_weight": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_front_weight"),
-                "mesh_normal": os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "hybrid_mesh_normal"),
+                "gs_depth": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_gs_depth"),
+                "mesh_depth": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_mesh_depth"),
+                "final_depth": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_final_depth"),
+                "gs_alpha": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_gs_alpha"),
+                "mesh_alpha": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_mesh_alpha"),
+                "mesh_rgb": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_mesh_rgb"),
+                "gs_rgb": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_gs_rgb"),
+                "sky_rgb": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_sky_rgb"),
+                "front_weight": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_front_weight"),
+                "mesh_normal": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "hybrid_mesh_normal"),
             }
             for path in aerial_hybrid_buffer_path.values():
                 makedirs(path, exist_ok=True)
     if add_street:
-        street_render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "street", "renders")
+        street_render_path = os.path.join(output_root, name, "ours_{}".format(iteration), "street", "renders")
         makedirs(street_render_path, exist_ok=True)
         if not render_only:
-            street_error_path = os.path.join(model_path, name, "ours_{}".format(iteration), "street", "errors")
-            street_gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "street", "gt")
+            street_error_path = os.path.join(output_root, name, "ours_{}".format(iteration), "street", "errors")
+            street_gts_path = os.path.join(output_root, name, "ours_{}".format(iteration), "street", "gt")
             makedirs(street_error_path, exist_ok=True)
             makedirs(street_gts_path, exist_ok=True)
         
         if vis_normal:
-            street_normal_path = os.path.join(model_path, name, "ours_{}".format(iteration), "street", "normal")
+            street_normal_path = os.path.join(output_root, name, "ours_{}".format(iteration), "street", "normal")
             makedirs(street_normal_path, exist_ok=True)
         if vis_depth:
-            street_depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "street", "depth")
+            street_depth_path = os.path.join(output_root, name, "ours_{}".format(iteration), "street", "depth")
             makedirs(street_depth_path, exist_ok=True)
         if save_hybrid_buffers:
             street_hybrid_buffer_path = {
-                "gs_depth": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_gs_depth"),
-                "mesh_depth": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_mesh_depth"),
-                "final_depth": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_final_depth"),
-                "gs_alpha": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_gs_alpha"),
-                "mesh_alpha": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_mesh_alpha"),
-                "mesh_rgb": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_mesh_rgb"),
-                "gs_rgb": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_gs_rgb"),
-                "sky_rgb": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_sky_rgb"),
-                "front_weight": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_front_weight"),
-                "mesh_normal": os.path.join(model_path, name, "ours_{}".format(iteration), "street", "hybrid_mesh_normal"),
+                "gs_depth": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_gs_depth"),
+                "mesh_depth": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_mesh_depth"),
+                "final_depth": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_final_depth"),
+                "gs_alpha": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_gs_alpha"),
+                "mesh_alpha": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_mesh_alpha"),
+                "mesh_rgb": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_mesh_rgb"),
+                "gs_rgb": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_gs_rgb"),
+                "sky_rgb": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_sky_rgb"),
+                "front_weight": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_front_weight"),
+                "mesh_normal": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "hybrid_mesh_normal"),
             }
             for path in street_hybrid_buffer_path.values():
                 makedirs(path, exist_ok=True)
@@ -384,8 +398,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
     street_per_view_dict = {}
     street_views = [view for view in views if view.image_type=="street"]
     for idx, view in enumerate(tqdm(street_views, desc="Street rendering progress")):
-        
-        torch.cuda.synchronize();t_start = time.time()
+        if show_fps:
+            torch.cuda.synchronize()
+            t_start = time.time()
         render_pkg = render_fn(view, gaussians, pipe, background)
         # render_pkg = getattr(modules, 'render')(view, gaussians, pipe, background)
         if render_motion_vectors and idx + 1 < len(street_views):
@@ -394,9 +409,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
             motion_color = _flow_uv_to_color(motion_pkg["motion"], motion_pkg["motion_support"])
             motion_name = _motion_vec_filename(idx, idx + 1)
             imageio.imwrite(os.path.join(street_render_path, motion_name), motion_color)
-        torch.cuda.synchronize();t_end = time.time()
-        
-        street_t_list.append(t_end - t_start)
+        if show_fps:
+            torch.cuda.synchronize()
+            street_t_list.append(time.time() - t_start)
 
         # renders
         rendering = torch.clamp(render_pkg["render"], 0.0, 1.0)
@@ -429,7 +444,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
         if hybrid_enabled and idx == 0:
             _save_mesh_instances(
                 render_pkg,
-                os.path.join(model_path, name, "ours_{}".format(iteration), "street"),
+                os.path.join(output_root, name, "ours_{}".format(iteration), "street"),
             )
 
         if render_only:
@@ -443,7 +458,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
         street_per_view_dict['{0:05d}'.format(idx) + ".png"] = int(visible_count.item())
     
     if write_per_view_count and len(street_views) > 0:
-        street_count_path = os.path.join(model_path, name, "ours_{}".format(iteration), "street", "per_view_count.json")
+        street_count_path = os.path.join(output_root, name, "ours_{}".format(iteration), "street", "per_view_count.json")
         with open(street_count_path, 'w') as fp:
             json.dump(street_per_view_dict, fp, indent=True)
         os.chmod(street_count_path, 0o666)
@@ -453,8 +468,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
     aerial_per_view_dict = {}
     aerial_views = [view for view in views if view.image_type=="aerial"]
     for idx, view in enumerate(tqdm(aerial_views, desc="Aerial rendering progress")):
-        
-        torch.cuda.synchronize();t_start = time.time()
+        if show_fps:
+            torch.cuda.synchronize()
+            t_start = time.time()
         render_pkg = render_fn(view, gaussians, pipe, background)
         # render_pkg = getattr(modules, 'render')(view, gaussians, pipe, background)
         if render_motion_vectors and idx + 1 < len(aerial_views):
@@ -463,9 +479,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
             motion_color = _flow_uv_to_color(motion_pkg["motion"], motion_pkg["motion_support"])
             motion_name = _motion_vec_filename(idx, idx + 1)
             imageio.imwrite(os.path.join(aerial_render_path, motion_name), motion_color)
-        torch.cuda.synchronize();t_end = time.time()
-
-        aerial_t_list.append(t_end - t_start)
+        if show_fps:
+            torch.cuda.synchronize()
+            aerial_t_list.append(time.time() - t_start)
 
         # renders
         rendering = torch.clamp(render_pkg["render"], 0.0, 1.0)
@@ -498,7 +514,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
         if hybrid_enabled and idx == 0:
             _save_mesh_instances(
                 render_pkg,
-                os.path.join(model_path, name, "ours_{}".format(iteration), "aerial"),
+                os.path.join(output_root, name, "ours_{}".format(iteration), "aerial"),
             )
 
         if render_only:
@@ -512,34 +528,36 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
         aerial_per_view_dict['{0:05d}'.format(idx) + ".png"] = int(visible_count.item())
 
     if write_per_view_count and len(aerial_views) > 0:
-        aerial_count_path = os.path.join(model_path, name, "ours_{}".format(iteration), "aerial", "per_view_count.json")
+        aerial_count_path = os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "per_view_count.json")
         with open(aerial_count_path, 'w') as fp:
             json.dump(aerial_per_view_dict, fp, indent=True)
         os.chmod(aerial_count_path, 0o666)
 
-    aerial_valid_count = max(len(aerial_t_list) - 5, 0)
-    street_valid_count = max(len(street_t_list) - 5, 0)
-    aerial_time = sum(aerial_t_list[5:])
-    street_time = sum(street_t_list[5:])
+    if show_fps:
+        aerial_valid_count = max(len(aerial_t_list) - 5, 0)
+        street_valid_count = max(len(street_t_list) - 5, 0)
+        aerial_time = sum(aerial_t_list[5:])
+        street_time = sum(street_t_list[5:])
 
-    aerial_fps = aerial_valid_count / aerial_time if aerial_time > 0 else 0.0
-    street_fps = street_valid_count / street_time if street_time > 0 else 0.0
+        aerial_fps = aerial_valid_count / aerial_time if aerial_time > 0 else 0.0
+        street_fps = street_valid_count / street_time if street_time > 0 else 0.0
 
-    total_valid_count = aerial_valid_count + street_valid_count
-    total_time = aerial_time + street_time
-    total_fps = total_valid_count / total_time if total_time > 0 else 0.0
+        total_valid_count = aerial_valid_count + street_valid_count
+        total_time = aerial_time + street_time
+        total_fps = total_valid_count / total_time if total_time > 0 else 0.0
 
-    print("Aerial帧率: {}".format(aerial_fps))
-    print("Street帧率: {}".format(street_fps))
-    print("总帧率: {}".format(total_fps))
+        print("Aerial帧率: {}".format(aerial_fps))
+        print("Street帧率: {}".format(street_fps))
+        print("总帧率: {}".format(total_fps))
 
     
-def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, explicit, render_motion_vectors=False, write_per_view_count=False):
+def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, explicit, render_motion_vectors=False, write_per_view_count=False, show_fps=False):
     with torch.no_grad():
         if pipe.no_prefilter_step > 0:
             pipe.add_prefilter = False
         else:
             pipe.add_prefilter = True
+        fixed_lod = int(getattr(pipe, "fix_lod", -1))
         camera_path_mode = getattr(dataset, "camera_path_mode", "")
         xr_mode = getattr(dataset, "xr_mode", "")
         scene_skip_train = skip_train if not (camera_path_mode or xr_mode) else False
@@ -550,6 +568,9 @@ def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, 
         gaussians = getattr(modules, model_config['name'])(**model_config['kwargs'])
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False, explicit=explicit, skip_train=scene_skip_train, skip_test=scene_skip_test)
         gaussians.eval()
+        if fixed_lod >= 0:
+            gaussians.fix_lod = fixed_lod
+            print(f"[render] fixed LoD enabled: {fixed_lod}")
 
         if not os.path.exists(dataset.model_path):
             os.makedirs(dataset.model_path)
@@ -557,7 +578,7 @@ def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, 
         if xr_mode:
             render_fn = _select_render_fn(__import__('gaussian_renderer'), pipe)
             run_openxr_render_session(
-                model_path=dataset.model_path,
+                model_path=_resolve_render_output_root(dataset.model_path, fixed_lod),
                 iteration=scene.loaded_iter,
                 gaussians=gaussians,
                 pipe=pipe,
@@ -580,14 +601,14 @@ def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, 
             return
         
         if not skip_train:
-            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipe, scene.background, dataset.add_aerial, dataset.add_street, render_only=getattr(dataset, "render_only", False), render_motion_vectors=render_motion_vectors, write_per_view_count=write_per_view_count)
+            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipe, scene.background, dataset.add_aerial, dataset.add_street, render_only=getattr(dataset, "render_only", False), render_motion_vectors=render_motion_vectors, write_per_view_count=write_per_view_count, show_fps=show_fps)
 
         if not skip_test:
             test_views = scene.getTestCameras()
             if len(TARGET_RENDER_IMAGE_PATHS) > 0 and skip_train:
                 test_views = scene.getTrainCameras() + scene.getTestCameras()
                 print("[test] using train+test camera pool for target-image rendering")
-            render_set(dataset.model_path, "test", scene.loaded_iter, test_views, gaussians, pipe, scene.background, dataset.add_aerial, dataset.add_street, render_only=getattr(dataset, "render_only", False), render_motion_vectors=render_motion_vectors, write_per_view_count=write_per_view_count)
+            render_set(dataset.model_path, "test", scene.loaded_iter, test_views, gaussians, pipe, scene.background, dataset.add_aerial, dataset.add_street, render_only=getattr(dataset, "render_only", False), render_motion_vectors=render_motion_vectors, write_per_view_count=write_per_view_count, show_fps=show_fps)
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -628,6 +649,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_views", type=int, default=-1)
     parser.add_argument("--render_motion_vectors", action="store_true")
     parser.add_argument("--write_per_view_count", action="store_true")
+    parser.add_argument("--showFPS", action="store_true")
     parser.add_argument("--camera_path_mode", type=str, default="")
     parser.add_argument("--camera_path_start_view", type=str, default="")
     parser.add_argument("--camera_path_end_view", type=str, default="")
@@ -654,6 +676,7 @@ if __name__ == "__main__":
     parser.add_argument("--xr_socket_host", type=str, default="127.0.0.1")
     parser.add_argument("--xr_socket_port", type=int, default=6110)
     parser.add_argument("--xr_max_frames", type=int, default=-1)
+    parser.add_argument("--fix-lod", type=int, default=-1)
     args = parser.parse_args(sys.argv[1:])
 
     if args.num_workers > 0:
@@ -692,6 +715,7 @@ if __name__ == "__main__":
         lp.xr_socket_host = args.xr_socket_host
         lp.xr_socket_port = args.xr_socket_port
         lp.xr_max_frames = args.xr_max_frames
+        lp.fix_lod = args.fix_lod if args.fix_lod >= 0 else getattr(lp, "fix_lod", -1)
     if args.enable_hybrid_render:
         pp.enable_hybrid_render = True
     if args.hybrid_scene_config:
@@ -735,6 +759,7 @@ if __name__ == "__main__":
         pp.hybrid_mesh_env_ambient_strength = args.hybrid_mesh_env_ambient_strength
     if args.hybrid_verbose:
         pp.hybrid_verbose = True
+    pp.fix_lod = args.fix_lod if args.fix_lod >= 0 else getattr(pp, "fix_lod", -1)
     if len(args.target_view) > 0:
         TARGET_RENDER_IMAGE_PATHS = set(args.target_view)
     elif args.camera_path_mode == "interpolate" and args.camera_path_start_view and args.camera_path_end_view:
@@ -748,4 +773,4 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(lp, op, pp, args.iteration, args.skip_train, args.skip_test, args.ape, args.explicit, render_motion_vectors=args.render_motion_vectors, write_per_view_count=args.write_per_view_count)
+    render_sets(lp, op, pp, args.iteration, args.skip_train, args.skip_test, args.ape, args.explicit, render_motion_vectors=args.render_motion_vectors, write_per_view_count=args.write_per_view_count, show_fps=args.showFPS)

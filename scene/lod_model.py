@@ -53,6 +53,9 @@ class GaussianLoDModel(BasicModel):
         self.padding =  0.0
         self.ape_code = -1
         self.dist2level = 'floor'
+        self.fix_lod = getattr(self, "fix_lod", None)
+        if self.fix_lod is not None and int(self.fix_lod) < 0:
+            self.fix_lod = None
         self.setup_functions()
 
         if self.color_attr == "RGB":  
@@ -284,17 +287,27 @@ class GaussianLoDModel(BasicModel):
             self.freeze_mlp(self.embedding_appearance)
 
     def set_anchor_mask(self, cam_center, resolution_scale):
-        dist = torch.sqrt(torch.sum((self.get_anchor - cam_center)**2, dim=1)) * resolution_scale
-        pred_level = torch.log2(self.standard_dist/dist)/math.log2(self.fork) + self._extra_level
-        int_level = self.map_to_int_level(pred_level, self.street_levels - 1)
+        fixed_lod = getattr(self, "fix_lod", None)
+        if fixed_lod is not None:
+            fixed_lod = min(max(int(fixed_lod), 0), int(self.street_levels) - 1)
+            int_level = torch.full((self.get_anchor.shape[0],), fixed_lod, dtype=torch.int, device=self._level.device)
+        else:
+            dist = torch.sqrt(torch.sum((self.get_anchor - cam_center)**2, dim=1)) * resolution_scale
+            pred_level = torch.log2(self.standard_dist/dist)/math.log2(self.fork) + self._extra_level
+            int_level = self.map_to_int_level(pred_level, self.street_levels - 1)
         # print(f"[LoD] int_level max: {int_level.max().item()}")
         # int_level = torch.full((pred_level.shape[0],), 3, dtype=torch.int, device=pred_level.device)
         self._anchor_mask = (self._level.squeeze(dim=1) <= int_level)
     
     def set_gs_mask(self, cam_center, resolution_scale):
-        dist = torch.sqrt(torch.sum((self._xyz - cam_center)**2, dim=1)) * resolution_scale
-        pred_level = torch.log2(self.standard_dist/dist)/math.log2(self.fork) + self._extra_level
-        int_level = self.map_to_int_level(pred_level, self.street_levels - 1)
+        fixed_lod = getattr(self, "fix_lod", None)
+        if fixed_lod is not None:
+            fixed_lod = min(max(int(fixed_lod), 0), int(self.street_levels) - 1)
+            int_level = torch.full((self._xyz.shape[0],), fixed_lod, dtype=torch.int, device=self._level.device)
+        else:
+            dist = torch.sqrt(torch.sum((self._xyz - cam_center)**2, dim=1)) * resolution_scale
+            pred_level = torch.log2(self.standard_dist/dist)/math.log2(self.fork) + self._extra_level
+            int_level = self.map_to_int_level(pred_level, self.street_levels - 1)
         # print(f"[LoD] int_level max: {int_level.max().item()}")
         # int_level = torch.full((pred_level.shape[0],), 3, dtype=torch.int, device=pred_level.device)
         self._gs_mask = (self._level.squeeze(dim=1) <= int_level)
