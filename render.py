@@ -42,6 +42,76 @@ from utils.hybrid_camera_paths import (
 from xr import run_openxr_render_session
 from argparse import ArgumentParser
 
+HYBRID_RENDER_CAR_BASE_PRESET = {
+    "enable_hybrid_render": True,
+    "hybrid_mesh_backend": "nvdiffrast",
+    "hybrid_scene_config": "config/hybrid/example_scene.yaml",
+    "hybrid_verbose": True,
+}
+
+HYBRID_RENDER_CAR_ORBIT_PRESET = {
+    "camera_path_mode": "orbit",
+    "camera_path_reference_view": "X_009_00307",
+    "camera_path_frames": 240,
+    "camera_path_name": "demo_orbit",
+    "camera_path_save_video": True,
+    "camera_path_video_fps": 60,
+    "orbit_center": [-14.914, 0.3, 17.358],
+    "orbit_axis_mode": "auto_scene_up",
+    "orbit_style": "reference_plane_circle",
+    "orbit_radius": 8.0,
+    "orbit_start_azimuth_deg": 0.0,
+    "orbit_sweep_deg": 360.0,
+}
+
+HYBRID_RENDER_CAR_BASE_FLAGS = {
+    "enable_hybrid_render": "--enable_hybrid_render",
+    "hybrid_mesh_backend": "--hybrid_mesh_backend",
+    "hybrid_scene_config": "--hybrid_scene_config",
+    "hybrid_verbose": "--hybrid_verbose",
+}
+
+HYBRID_RENDER_CAR_ORBIT_FLAGS = {
+    "camera_path_mode": "--camera_path_mode",
+    "camera_path_reference_view": "--camera_path_reference_view",
+    "camera_path_frames": "--camera_path_frames",
+    "camera_path_name": "--camera_path_name",
+    "camera_path_save_video": "--camera_path_save_video",
+    "camera_path_video_fps": "--camera_path_video_fps",
+    "orbit_center": "--orbit_center",
+    "orbit_axis_mode": "--orbit_axis_mode",
+    "orbit_style": "--orbit_style",
+    "orbit_radius": "--orbit_radius",
+    "orbit_start_azimuth_deg": "--orbit_start_azimuth_deg",
+    "orbit_sweep_deg": "--orbit_sweep_deg",
+}
+
+
+def _apply_cli_preset(args, argv, preset_values, preset_flags):
+    argv_flags = set(argv)
+    for attr, value in preset_values.items():
+        if preset_flags[attr] in argv_flags:
+            continue
+        setattr(args, attr, value)
+
+
+def _apply_hybrid_render_car_preset(args, argv):
+    if not getattr(args, "hybrid_render_car", False):
+        return
+
+    _apply_cli_preset(args, argv, HYBRID_RENDER_CAR_BASE_PRESET, HYBRID_RENDER_CAR_BASE_FLAGS)
+
+    argv_flags = set(argv)
+    if "--target_view" in argv_flags or "--xr_mode" in argv_flags:
+        return
+
+    camera_path_mode = getattr(args, "camera_path_mode", "")
+    if camera_path_mode and camera_path_mode != "orbit":
+        return
+
+    _apply_cli_preset(args, argv, HYBRID_RENDER_CAR_ORBIT_PRESET, HYBRID_RENDER_CAR_ORBIT_FLAGS)
+
+
 def _flow_uv_to_color(flow_uv, support=None, clip_percentile=99.0):
     flow = flow_uv.detach().permute(1, 2, 0).cpu().numpy()
     mag = np.linalg.norm(flow, axis=2)
@@ -624,6 +694,11 @@ if __name__ == "__main__":
     parser.add_argument("--lazy_load_images", action="store_true")
     parser.add_argument("--render_only", action="store_true")
     parser.add_argument("--enable_hybrid_render", action="store_true")
+    parser.add_argument(
+        "--hybrid_render_car",
+        action="store_true",
+        help="Apply the default hybrid car scene preset. If no target view/XR mode is given, it also enables the default orbit-video camera path.",
+    )
     parser.add_argument("--hybrid_scene_config", type=str, default="")
     parser.add_argument("--hybrid_mesh_path", type=str, default="")
     parser.add_argument("--hybrid_mesh_backend", type=str, default="")
@@ -678,6 +753,7 @@ if __name__ == "__main__":
     parser.add_argument("--xr_max_frames", type=int, default=-1)
     parser.add_argument("--fix-lod", type=int, default=-1)
     args = parser.parse_args(sys.argv[1:])
+    _apply_hybrid_render_car_preset(args, sys.argv[1:])
 
     if args.num_workers > 0:
         os.environ["HGS_NUM_WORKERS"] = str(args.num_workers)
