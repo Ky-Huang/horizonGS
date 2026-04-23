@@ -32,20 +32,20 @@ def _look_at_c2w(position, target, up_hint):
     up_hint = _normalize(np.asarray(up_hint, dtype=np.float32))
 
     forward = _normalize(target - position)
-    right = np.cross(up_hint, forward)
+    # HorizonGS uses camera columns as x-right, y-down, z-forward, so the
+    # horizontal axis must follow forward x up instead of up x forward.
+    right = np.cross(forward, up_hint)
     if np.linalg.norm(right) < 1e-6:
         alt_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
         if abs(np.dot(alt_up, forward)) > 0.95:
             alt_up = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        right = np.cross(alt_up, forward)
+        right = np.cross(forward, alt_up)
     right = _normalize(right)
-    up = _normalize(np.cross(forward, right))
+    up = _normalize(np.cross(right, forward))
 
     c2w = np.eye(4, dtype=np.float32)
     c2w[:3, 0] = right
-    # HorizonGS cameras follow the internal convention used by Camera /
-    # world_view_transform: x-right, y-down, z-forward. Keep orbit cameras in
-    # the same basis so synthetic paths match the loaded COLMAP cameras.
+    # HorizonGS cameras store columns as x-right, y-down, z-forward.
     c2w[:3, 1] = -up
     c2w[:3, 2] = forward
     c2w[:3, 3] = position
@@ -175,6 +175,29 @@ def build_interpolated_path(start_camera, end_camera, num_frames: int):
             )
         )
     return cameras
+
+
+def build_sequence_interpolated_path(key_cameras, num_intermediate_views: int = 1):
+    if not key_cameras:
+        return []
+    if len(key_cameras) == 1:
+        return [key_cameras[0]]
+
+    num_intermediate_views = max(int(num_intermediate_views), 0)
+    sequence = [key_cameras[0]]
+    for segment_idx, (start_camera, end_camera) in enumerate(zip(key_cameras[:-1], key_cameras[1:])):
+        if num_intermediate_views > 0:
+            segment = build_interpolated_path(
+                start_camera,
+                end_camera,
+                num_frames=num_intermediate_views + 2,
+            )
+            for interp_idx, camera in enumerate(segment[1:-1], start=1):
+                camera.image_name = f"path_sequence_{segment_idx:04d}_{interp_idx:03d}.png"
+                camera.image_path = camera.image_name
+                sequence.append(camera)
+        sequence.append(end_camera)
+    return sequence
 
 
 def build_orbit_path(

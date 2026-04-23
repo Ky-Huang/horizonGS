@@ -34,6 +34,7 @@ from utils.general_utils import safe_state, parse_cfg, visualize_depth, visualiz
 from utils.image_utils import save_rgba
 from utils.hybrid_camera_paths import (
     build_interpolated_path,
+    build_sequence_interpolated_path,
     build_orbit_path,
     collect_camera_pool,
     resolve_orbit_axis,
@@ -300,6 +301,38 @@ def _resolve_render_output_root(model_path, fixed_lod=-1):
     return os.path.join(model_path, f"fix-lod-{fixed_lod}")
 
 
+def _parse_camera_path_index(index_value, frame_value, field_name):
+    if int(index_value) >= 0:
+        return int(index_value)
+    frame_value = str(frame_value or "").strip()
+    if not frame_value:
+        return None
+    frame_stem = os.path.splitext(os.path.basename(frame_value))[0]
+    if not frame_stem.isdigit():
+        raise ValueError(f"{field_name} must be an integer index or a zero-padded frame filename, got '{frame_value}'.")
+    return int(frame_stem)
+
+
+def _select_camera_path_source(scene, source_name):
+    source_name = (source_name or "all").strip().lower()
+    if source_name == "train":
+        return scene.getTrainCameras()
+    if source_name == "test":
+        return scene.getTestCameras()
+    if source_name == "all":
+        return collect_camera_pool(scene)
+    raise ValueError(f"Unknown camera_path_source: {source_name}")
+
+
+def _filter_camera_path_image_type(cameras, image_type):
+    image_type = (image_type or "all").strip().lower()
+    if image_type == "all":
+        return cameras
+    if image_type not in {"street", "aerial"}:
+        raise ValueError(f"Unknown camera_path_image_type: {image_type}")
+    return [camera for camera in cameras if getattr(camera, "image_type", "") == image_type]
+
+
 def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, write_per_view_count):
     mode = getattr(dataset, "camera_path_mode", "")
     if not mode:
@@ -317,6 +350,50 @@ def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, 
         start_cam = find_camera_by_name(all_cameras, start_name)
         end_cam = find_camera_by_name(all_cameras, end_name)
         path_views = build_interpolated_path(start_cam, end_cam, getattr(dataset, "camera_path_frames", 120))
+    elif mode == "sequence":
+        source_name = getattr(dataset, "camera_path_source", "all")
+        image_type = getattr(dataset, "camera_path_image_type", "all")
+        source_cameras = _select_camera_path_source(scene, source_name)
+        source_cameras = _filter_camera_path_image_type(source_cameras, image_type)
+        if not source_cameras:
+            raise ValueError(
+                f"camera_path_mode='sequence' found no cameras after filtering source='{source_name}' image_type='{image_type}'."
+            )
+
+        start_index = _parse_camera_path_index(
+            getattr(dataset, "camera_path_start_index", -1),
+            getattr(dataset, "camera_path_start_frame", ""),
+            "--camera_path_start_index/--camera_path_start_frame",
+        )
+        end_index = _parse_camera_path_index(
+            getattr(dataset, "camera_path_end_index", -1),
+            getattr(dataset, "camera_path_end_frame", ""),
+            "--camera_path_end_index/--camera_path_end_frame",
+        )
+        if start_index is None or end_index is None:
+            raise ValueError(
+                "camera_path_mode='sequence' requires --camera_path_start_index/--camera_path_start_frame "
+                "and --camera_path_end_index/--camera_path_end_frame."
+            )
+        if start_index < 0 or end_index < 0:
+            raise ValueError("camera_path_mode='sequence' requires non-negative start/end indices.")
+        if start_index > end_index:
+            raise ValueError("camera_path_mode='sequence' requires start index <= end index.")
+        if end_index >= len(source_cameras):
+            raise ValueError(
+                f"camera_path_mode='sequence' end index {end_index} is out of range for {len(source_cameras)} filtered cameras."
+            )
+
+        key_cameras = source_cameras[start_index : end_index + 1]
+        num_intermediate_views = int(getattr(dataset, "camera_path_intermediate_views", 1))
+        path_views = build_sequence_interpolated_path(
+            key_cameras,
+            num_intermediate_views=num_intermediate_views,
+        )
+        print(
+            f"[camera-path] source={source_name} image_type={image_type} key_frames={len(key_cameras)} "
+            f"range=[{start_index}, {end_index}] inserted_per_pair={num_intermediate_views} total_frames={len(path_views)}"
+        )
     elif mode == "orbit":
         ref_name = getattr(dataset, "camera_path_reference_view", "") or getattr(dataset, "camera_path_start_view", "")
         if not ref_name:
@@ -353,7 +430,24 @@ def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, 
     else:
         raise ValueError(f"Unknown camera_path_mode: {mode}")
 
-    render_name = getattr(dataset, "camera_path_name", f"path_{mode}")
+    raw_render_name = getattr(dataset, "camera_path_name", "")
+    render_name = raw_render_name or f"path_{mode}"
+    if mode == "sequence" and not raw_render_name:
+        source_name = getattr(dataset, "camera_path_source", "all")
+        image_type = getattr(dataset, "camera_path_image_type", "all")
+        start_index = _parse_camera_path_index(
+            getattr(dataset, "camera_path_start_index", -1),
+            getattr(dataset, "camera_path_start_frame", ""),
+            "--camera_path_start_index/--camera_path_start_frame",
+        )
+        end_index = _parse_camera_path_index(
+            getattr(dataset, "camera_path_end_index", -1),
+            getattr(dataset, "camera_path_end_frame", ""),
+            "--camera_path_end_index/--camera_path_end_frame",
+        )
+        render_name = (
+            f"path_sequence_{source_name}_{image_type}_{start_index:05d}_{end_index:05d}"
+        )
     render_set(
         dataset.model_path,
         render_name,
@@ -731,6 +825,13 @@ if __name__ == "__main__":
     parser.add_argument("--camera_path_reference_view", type=str, default="")
     parser.add_argument("--camera_path_frames", type=int, default=120)
     parser.add_argument("--camera_path_name", type=str, default="")
+    parser.add_argument("--camera_path_source", type=str, default="all")
+    parser.add_argument("--camera_path_image_type", type=str, default="all")
+    parser.add_argument("--camera_path_start_index", type=int, default=-1)
+    parser.add_argument("--camera_path_end_index", type=int, default=-1)
+    parser.add_argument("--camera_path_start_frame", type=str, default="")
+    parser.add_argument("--camera_path_end_frame", type=str, default="")
+    parser.add_argument("--camera_path_intermediate_views", type=int, default=1)
     parser.add_argument("--camera_path_save_video", action="store_true")
     parser.add_argument("--camera_path_video_fps", type=int, default=30)
     parser.add_argument("--orbit_center", type=float, nargs=3, default=None)
@@ -770,7 +871,14 @@ if __name__ == "__main__":
         lp.camera_path_end_view = args.camera_path_end_view
         lp.camera_path_reference_view = args.camera_path_reference_view
         lp.camera_path_frames = args.camera_path_frames
-        lp.camera_path_name = args.camera_path_name if args.camera_path_name else f"path_{args.camera_path_mode}" if args.camera_path_mode else ""
+        lp.camera_path_name = args.camera_path_name
+        lp.camera_path_source = args.camera_path_source
+        lp.camera_path_image_type = args.camera_path_image_type
+        lp.camera_path_start_index = args.camera_path_start_index
+        lp.camera_path_end_index = args.camera_path_end_index
+        lp.camera_path_start_frame = args.camera_path_start_frame
+        lp.camera_path_end_frame = args.camera_path_end_frame
+        lp.camera_path_intermediate_views = args.camera_path_intermediate_views
         lp.camera_path_save_video = args.camera_path_save_video
         lp.camera_path_video_fps = args.camera_path_video_fps
         lp.orbit_center = args.orbit_center

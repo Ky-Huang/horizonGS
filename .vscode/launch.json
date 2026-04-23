@@ -76,11 +76,41 @@
                 // "--lazy_load_images",
                 "--render_only",
 
-                "--enable_hybrid_render",
-                "--hybrid_mesh_backend",
-                "nvdiffrast",
-                "--hybrid_scene_config",
-                "config/hybrid/example_scene.yaml",
+                // "--enable_hybrid_render",
+                // "--hybrid_mesh_backend",
+                // "nvdiffrast",
+                // "--hybrid_scene_config",
+                // "config/hybrid/example_scene.yaml",
+            ]
+        },
+                {
+            "name": "render smooth",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "render.py",
+            "console": "integratedTerminal",
+            // "justMyCode": false,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "args": [
+                "-m",
+                // "outputs/horizongs_2d/real/road1/fine",
+                "outputs/horizongs/real/road_subset/fine",
+                "--camera_path_mode",
+                "sequence",
+                "--camera_path_source",
+                "train",
+                "--camera_path_image_type",
+                "street",
+                "--camera_path_start_frame",
+                "00056.png",
+                "--camera_path_end_frame",
+                "00110.png",
+                "--camera_path_intermediate_views",
+                "3",
+                "--camera_path_name",
+                "road_subset_smooth_00056_00110"
             ]
         },
                 {
