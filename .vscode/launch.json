@@ -4,7 +4,7 @@
     // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-
+ 
         {
             "name": "preprocess",
             "type": "debugpy",
@@ -64,17 +64,18 @@
             "console": "integratedTerminal",
             // "justMyCode": false,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "6"
+                "CUDA_VISIBLE_DEVICES": "4"
             },
             "args": [
                 "-m",
                 // "outputs/horizongs_2d/real/road1/fine",
                 "outputs/horizongs/real/road_subset/fine",
-                "--skip_train",
+                // "--skip_train",
                 // "--num_workers",
                 // "4",
                 // "--lazy_load_images",
                 "--render_only",
+                "--render_point_cloud",
 
                 // "--enable_hybrid_render",
                 // "--hybrid_mesh_backend",

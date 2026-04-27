@@ -29,6 +29,7 @@ from scene import Scene
 import json
 import time
 import torchvision
+import importlib
 from tqdm import tqdm
 from utils.general_utils import safe_state, parse_cfg, visualize_depth, visualize_normal
 from utils.image_utils import save_rgba
@@ -161,6 +162,113 @@ def _hybrid_enabled(pipe):
 
 def _select_render_fn(modules, pipe):
     return getattr(modules, "hybrid_render" if _hybrid_enabled(pipe) else "render")
+
+
+def _resolve_lodmax(gaussians):
+    candidates = []
+    for attr in ("street_levels", "aerial_levels"):
+        value = getattr(gaussians, attr, None)
+        if value is not None:
+            candidates.append(int(round(float(value))) - 1)
+    levels = getattr(gaussians, "_level", None)
+    if levels is not None and hasattr(levels, "numel") and levels.numel() > 0:
+        candidates.append(int(levels.max().item()))
+    return max([0] + candidates)
+
+
+def _draw_point_cloud_text(image, text, origin):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(image, text, (origin[0] + 1, origin[1] + 1), font, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(image, text, origin, font, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+
+def _save_point_cloud_projection(points2d, selected_count, visible_count, output_path, lod_label, lod_value, width, height):
+    width = int(width)
+    height = int(height)
+    density = np.zeros((height, width), dtype=np.float32)
+
+    if points2d is not None and points2d.numel() > 0:
+        coords = points2d.detach().cpu().numpy()
+        x = np.rint(coords[:, 0]).astype(np.int64)
+        y = np.rint(coords[:, 1]).astype(np.int64)
+        valid = (x >= 0) & (x < width) & (y >= 0) & (y < height)
+        if np.any(valid):
+            np.add.at(density, (y[valid], x[valid]), 1.0)
+
+    if density.max() > 0:
+        normalized = np.log1p(density) / np.log1p(density.max())
+        heat = np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
+        image = cv2.cvtColor(cv2.applyColorMap(heat, cv2.COLORMAP_TURBO), cv2.COLOR_BGR2RGB)
+        image[density == 0] = 0
+    else:
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+
+    _draw_point_cloud_text(image, f"{lod_label} (lod={lod_value})", (12, 24))
+    _draw_point_cloud_text(image, f"visible: {visible_count}", (12, 48))
+    _draw_point_cloud_text(image, f"selected: {selected_count}", (12, 72))
+    imageio.imwrite(output_path, image)
+
+
+def _project_fixed_lod_points(view, gaussians, pipe, lod):
+    render_module = importlib.import_module("gaussian_renderer.render")
+    had_fix_lod = hasattr(gaussians, "fix_lod")
+    previous_lod = getattr(gaussians, "fix_lod", None)
+    gaussians.fix_lod = int(lod)
+    try:
+        if gaussians.explicit_gs:
+            gaussians.set_gs_mask(view.camera_center, view.resolution_scale)
+            mask = gaussians._gs_mask
+            selected_count = int(mask.sum().item())
+            if selected_count == 0:
+                empty = torch.empty((0, 2), dtype=torch.float32, device="cuda")
+                return empty, 0, 0
+            xyz, _color, _opacity, scaling, rot, _sh_degree, _selection_mask = gaussians.generate_explicit_gaussians(mask)
+        else:
+            gaussians.set_anchor_mask(view.camera_center, view.resolution_scale)
+            anchor_count = int(gaussians._anchor_mask.sum().item())
+            if anchor_count == 0:
+                empty = torch.empty((0, 2), dtype=torch.float32, device="cuda")
+                return empty, 0, 0
+            mask = render_module.prefilter_voxel(view, gaussians).squeeze() if getattr(pipe, "add_prefilter", True) else gaussians._anchor_mask
+            selected_count = int(mask.sum().item())
+            if selected_count == 0:
+                empty = torch.empty((0, 2), dtype=torch.float32, device="cuda")
+                return empty, 0, 0
+            xyz = gaussians.get_anchor[mask]
+            scaling = gaussians.get_scaling[mask][:, :3]
+            rot = gaussians.get_rotation[mask]
+
+        radii, points2d = render_module._project_gaussians_to_2d(xyz, rot, scaling, view, gaussians.gs_attr)
+        visible = radii > 0
+        return points2d[visible], selected_count, int(visible.sum().item())
+    finally:
+        if had_fix_lod:
+            gaussians.fix_lod = previous_lod
+        else:
+            delattr(gaussians, "fix_lod")
+
+
+def _render_point_cloud_lod_pair(view, gaussians, pipe, output_paths, filename, lodmax):
+    stats = {}
+    lod_specs = [("lod0", 0), ("lodmax", lodmax)]
+    for lod_label, lod_value in lod_specs:
+        points2d, selected_count, visible_count = _project_fixed_lod_points(view, gaussians, pipe, lod_value)
+        _save_point_cloud_projection(
+            points2d,
+            selected_count,
+            visible_count,
+            os.path.join(output_paths[lod_label], filename),
+            lod_label,
+            lod_value,
+            view.image_width,
+            view.image_height,
+        )
+        stats[lod_label] = {
+            "lod": int(lod_value),
+            "selected_count": selected_count,
+            "visible_count": visible_count,
+        }
+    return stats
 
 
 def _save_depth_with_alpha(depth_map, alpha_mask, path):
@@ -333,7 +441,7 @@ def _filter_camera_path_image_type(cameras, image_type):
     return [camera for camera in cameras if getattr(camera, "image_type", "") == image_type]
 
 
-def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, write_per_view_count):
+def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, write_per_view_count, render_point_cloud):
     mode = getattr(dataset, "camera_path_mode", "")
     if not mode:
         return False
@@ -461,6 +569,7 @@ def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, 
         render_only=True,
         render_motion_vectors=render_motion_vectors,
         write_per_view_count=write_per_view_count,
+        render_point_cloud=render_point_cloud,
     )
 
     if bool(getattr(dataset, "camera_path_save_video", False)):
@@ -478,7 +587,7 @@ def _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, 
                 print(f"[camera-path] wrote video: {output_path}")
     return True
 
-def render_set(model_path, name, iteration, views, gaussians, pipe, background, add_aerial, add_street, render_only=False, render_motion_vectors=False, write_per_view_count=False, show_fps=False):
+def render_set(model_path, name, iteration, views, gaussians, pipe, background, add_aerial, add_street, render_only=False, render_motion_vectors=False, write_per_view_count=False, show_fps=False, render_point_cloud=False):
     vis_normal = False
     vis_depth = False
     if gaussians.gs_attr == "2D" and not render_only:
@@ -487,6 +596,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
     hybrid_enabled = _hybrid_enabled(pipe)
     save_hybrid_buffers = hybrid_enabled and bool(getattr(pipe, "hybrid_save_buffers", False))
     output_root = _resolve_render_output_root(model_path, getattr(pipe, "fix_lod", -1))
+    point_cloud_lodmax = _resolve_lodmax(gaussians) if render_point_cloud else 0
 
     views = _filter_views_by_targets(views, TARGET_RENDER_IMAGE_PATHS)
     if TARGET_RENDER_MAX_VIEWS is not None:
@@ -523,6 +633,13 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
             }
             for path in aerial_hybrid_buffer_path.values():
                 makedirs(path, exist_ok=True)
+        if render_point_cloud:
+            aerial_point_cloud_path = {
+                "lod0": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "point_cloud_lod0"),
+                "lodmax": os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "point_cloud_lodmax"),
+            }
+            for path in aerial_point_cloud_path.values():
+                makedirs(path, exist_ok=True)
     if add_street:
         street_render_path = os.path.join(output_root, name, "ours_{}".format(iteration), "street", "renders")
         makedirs(street_render_path, exist_ok=True)
@@ -553,6 +670,13 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
             }
             for path in street_hybrid_buffer_path.values():
                 makedirs(path, exist_ok=True)
+        if render_point_cloud:
+            street_point_cloud_path = {
+                "lod0": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "point_cloud_lod0"),
+                "lodmax": os.path.join(output_root, name, "ours_{}".format(iteration), "street", "point_cloud_lodmax"),
+            }
+            for path in street_point_cloud_path.values():
+                makedirs(path, exist_ok=True)
 
     modules = __import__('gaussian_renderer')
     render_fn = _select_render_fn(modules, pipe)
@@ -560,6 +684,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
     street_t_list = []
     street_visible_count_list = []
     street_per_view_dict = {}
+    street_point_cloud_dict = {}
     street_views = [view for view in views if view.image_type=="street"]
     for idx, view in enumerate(tqdm(street_views, desc="Street rendering progress")):
         if show_fps:
@@ -619,17 +744,33 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
             save_rgba(gt, os.path.join(street_gts_path, '{0:05d}'.format(idx) + ".png"))
             view.release_image_tensors()
         street_visible_count_list.append(int(visible_count.item()))
-        street_per_view_dict['{0:05d}'.format(idx) + ".png"] = int(visible_count.item())
+        filename = '{0:05d}'.format(idx) + ".png"
+        street_per_view_dict[filename] = int(visible_count.item())
+        if render_point_cloud:
+            street_point_cloud_dict[filename] = _render_point_cloud_lod_pair(
+                view,
+                gaussians,
+                pipe,
+                street_point_cloud_path,
+                filename,
+                point_cloud_lodmax,
+            )
     
     if write_per_view_count and len(street_views) > 0:
         street_count_path = os.path.join(output_root, name, "ours_{}".format(iteration), "street", "per_view_count.json")
         with open(street_count_path, 'w') as fp:
             json.dump(street_per_view_dict, fp, indent=True)
         os.chmod(street_count_path, 0o666)
+    if render_point_cloud and len(street_views) > 0:
+        street_point_cloud_count_path = os.path.join(output_root, name, "ours_{}".format(iteration), "street", "point_cloud_counts.json")
+        with open(street_point_cloud_count_path, 'w') as fp:
+            json.dump(street_point_cloud_dict, fp, indent=True)
+        os.chmod(street_point_cloud_count_path, 0o666)
     
     aerial_t_list = []
     aerial_visible_count_list = []
     aerial_per_view_dict = {}
+    aerial_point_cloud_dict = {}
     aerial_views = [view for view in views if view.image_type=="aerial"]
     for idx, view in enumerate(tqdm(aerial_views, desc="Aerial rendering progress")):
         if show_fps:
@@ -689,13 +830,28 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
             save_rgba(gt, os.path.join(aerial_gts_path, '{0:05d}'.format(idx) + ".png"))
             view.release_image_tensors()
         aerial_visible_count_list.append(int(visible_count.item()))
-        aerial_per_view_dict['{0:05d}'.format(idx) + ".png"] = int(visible_count.item())
+        filename = '{0:05d}'.format(idx) + ".png"
+        aerial_per_view_dict[filename] = int(visible_count.item())
+        if render_point_cloud:
+            aerial_point_cloud_dict[filename] = _render_point_cloud_lod_pair(
+                view,
+                gaussians,
+                pipe,
+                aerial_point_cloud_path,
+                filename,
+                point_cloud_lodmax,
+            )
 
     if write_per_view_count and len(aerial_views) > 0:
         aerial_count_path = os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "per_view_count.json")
         with open(aerial_count_path, 'w') as fp:
             json.dump(aerial_per_view_dict, fp, indent=True)
         os.chmod(aerial_count_path, 0o666)
+    if render_point_cloud and len(aerial_views) > 0:
+        aerial_point_cloud_count_path = os.path.join(output_root, name, "ours_{}".format(iteration), "aerial", "point_cloud_counts.json")
+        with open(aerial_point_cloud_count_path, 'w') as fp:
+            json.dump(aerial_point_cloud_dict, fp, indent=True)
+        os.chmod(aerial_point_cloud_count_path, 0o666)
 
     if show_fps:
         aerial_valid_count = max(len(aerial_t_list) - 5, 0)
@@ -715,7 +871,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipe, background, 
         print("总帧率: {}".format(total_fps))
 
     
-def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, explicit, render_motion_vectors=False, write_per_view_count=False, show_fps=False):
+def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, explicit, render_motion_vectors=False, write_per_view_count=False, show_fps=False, render_point_cloud=False):
     with torch.no_grad():
         if pipe.no_prefilter_step > 0:
             pipe.add_prefilter = False
@@ -761,18 +917,18 @@ def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code, 
             )
             return
 
-        if _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, write_per_view_count):
+        if _render_camera_path(scene, dataset, gaussians, pipe, render_motion_vectors, write_per_view_count, render_point_cloud):
             return
         
         if not skip_train:
-            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipe, scene.background, dataset.add_aerial, dataset.add_street, render_only=getattr(dataset, "render_only", False), render_motion_vectors=render_motion_vectors, write_per_view_count=write_per_view_count, show_fps=show_fps)
+            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipe, scene.background, dataset.add_aerial, dataset.add_street, render_only=getattr(dataset, "render_only", False), render_motion_vectors=render_motion_vectors, write_per_view_count=write_per_view_count, show_fps=show_fps, render_point_cloud=render_point_cloud)
 
         if not skip_test:
             test_views = scene.getTestCameras()
             if len(TARGET_RENDER_IMAGE_PATHS) > 0 and skip_train:
                 test_views = scene.getTrainCameras() + scene.getTestCameras()
                 print("[test] using train+test camera pool for target-image rendering")
-            render_set(dataset.model_path, "test", scene.loaded_iter, test_views, gaussians, pipe, scene.background, dataset.add_aerial, dataset.add_street, render_only=getattr(dataset, "render_only", False), render_motion_vectors=render_motion_vectors, write_per_view_count=write_per_view_count, show_fps=show_fps)
+            render_set(dataset.model_path, "test", scene.loaded_iter, test_views, gaussians, pipe, scene.background, dataset.add_aerial, dataset.add_street, render_only=getattr(dataset, "render_only", False), render_motion_vectors=render_motion_vectors, write_per_view_count=write_per_view_count, show_fps=show_fps, render_point_cloud=render_point_cloud)
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -818,6 +974,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_views", type=int, default=-1)
     parser.add_argument("--render_motion_vectors", action="store_true")
     parser.add_argument("--write_per_view_count", action="store_true")
+    parser.add_argument("--render_point_cloud", action="store_true")
     parser.add_argument("--showFPS", action="store_true")
     parser.add_argument("--camera_path_mode", type=str, default="")
     parser.add_argument("--camera_path_start_view", type=str, default="")
@@ -900,6 +1057,7 @@ if __name__ == "__main__":
         lp.xr_socket_port = args.xr_socket_port
         lp.xr_max_frames = args.xr_max_frames
         lp.fix_lod = args.fix_lod if args.fix_lod >= 0 else getattr(lp, "fix_lod", -1)
+        lp.render_point_cloud = args.render_point_cloud
     if args.enable_hybrid_render:
         pp.enable_hybrid_render = True
     if args.hybrid_scene_config:
@@ -957,4 +1115,4 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(lp, op, pp, args.iteration, args.skip_train, args.skip_test, args.ape, args.explicit, render_motion_vectors=args.render_motion_vectors, write_per_view_count=args.write_per_view_count, show_fps=args.showFPS)
+    render_sets(lp, op, pp, args.iteration, args.skip_train, args.skip_test, args.ape, args.explicit, render_motion_vectors=args.render_motion_vectors, write_per_view_count=args.write_per_view_count, show_fps=args.showFPS, render_point_cloud=args.render_point_cloud)
